@@ -29,10 +29,21 @@ pub const AppConfig = struct {
         const env_config = try env.Config.load();
         var wallet_config = try wallet.loadFromEnv();
 
-        // If wallet was extracted, update the wallet location
+        // If wallet was extracted, update the wallet location and set TNS_ADMIN
         if (extracted_path) |path| {
             wallet_config.wallet_location = path;
             std.log.info("Using extracted wallet from ORACLE_WALLET_BASE64", .{});
+
+            // Set TNS_ADMIN environment variable so Oracle can find tnsnames.ora and sqlnet.ora
+            // The path must be null-terminated for the C setenv call
+            const path_z = try allocator.dupeZ(u8, path);
+            defer allocator.free(path_z);
+            const result = std.c.setenv("TNS_ADMIN", path_z.ptr, 1);
+            if (result != 0) {
+                std.log.err("Failed to set TNS_ADMIN environment variable", .{});
+                return error.EnvironmentSetupFailed;
+            }
+            std.log.info("TNS_ADMIN set to: {s}", .{path});
         }
 
         return .{
