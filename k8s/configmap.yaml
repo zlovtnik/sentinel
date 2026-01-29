@@ -1,0 +1,89 @@
+---
+# =============================================================================
+# Process Sentinel - ConfigMap
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: clm-system
+  labels:
+    app: sentinel
+data:
+  # Sentinel Configuration
+  SENTINEL_SERVICE_NAME: "process-sentinel"
+  SENTINEL_LISTEN_ADDRESS: "0.0.0.0"
+  SENTINEL_LISTEN_PORT: "8080"
+  SENTINEL_WORKER_THREADS: "4"
+  SENTINEL_LOG_LEVEL: "info"
+  SENTINEL_QUEUE_NAME: "SENTINEL_QUEUE"
+  
+  # Oracle Configuration (non-sensitive)
+  ORACLE_WALLET_LOCATION: "/opt/sentinel/wallet"
+  ORACLE_NET_TIMEOUT: "30"
+  
+  # Connection Pool
+  POOL_MIN_CONNECTIONS: "5"
+  POOL_MAX_CONNECTIONS: "20"
+  POOL_CONNECTION_TIMEOUT_MS: "5000"
+  POOL_IDLE_TIMEOUT_MS: "300000"
+  POOL_MAX_LIFETIME_MS: "1800000"
+  POOL_VALIDATION_INTERVAL_MS: "30000"
+  
+  # OAuth2/JWT Configuration (non-sensitive)
+  OAUTH2_ISSUER: "https://keycloak.clm-system.svc/realms/clm"
+  OAUTH2_AUDIENCE: "clm-api"
+  OAUTH2_SCOPE: "sentinel:read sentinel:write"
+  
+  # Telemetry
+  TELEMETRY_ENABLED: "true"
+  TELEMETRY_METRICS_PATH: "/metrics"
+  TELEMETRY_TRACING_ENABLED: "true"
+  TELEMETRY_SAMPLE_RATE: "0.1"
+
+---
+# =============================================================================
+# Process Sentinel - Secret Template
+# NOTE: Replace placeholder values before applying
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sentinel-secrets
+  namespace: clm-system
+  labels:
+    app: sentinel
+type: Opaque
+stringData:
+  # Oracle Wallet Password
+  ORACLE_WALLET_PASSWORD: "REPLACE_WITH_WALLET_PASSWORD"
+  
+  # Oracle Connection String
+  ORACLE_CONNECT_STRING: "REPLACE_WITH_TNS_ALIAS"
+  
+  # OAuth2 Client Credentials
+  OAUTH2_CLIENT_ID: "sentinel-client"
+  OAUTH2_CLIENT_SECRET: "REPLACE_WITH_CLIENT_SECRET"
+  
+  # JWT Signing Key (for validating tokens)
+  JWT_SIGNING_KEY: "REPLACE_WITH_JWT_KEY"
+
+---
+# =============================================================================
+# Oracle Wallet Secret Template
+# NOTE: Create from actual wallet files using:
+#   kubectl create secret generic oracle-wallet \
+#     --from-file=cwallet.sso \
+#     --from-file=ewallet.p12 \
+#     --from-file=tnsnames.ora \
+#     -n clm-system
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oracle-wallet
+  namespace: clm-system
+  labels:
+    app: sentinel
+type: Opaque
+data: {}

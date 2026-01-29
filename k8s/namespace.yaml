@@ -1,0 +1,11 @@
+---
+# =============================================================================
+# Process Sentinel - Namespace
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clm-system
+  labels:
+    name: clm-system
+    istio-injection: enabled
