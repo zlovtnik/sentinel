@@ -530,20 +530,20 @@ fn rewriteSqlnetOra(wallet_dir: []const u8, allocator: std.mem.Allocator) !void 
 
     // Rewrite WALLET_LOCATION line to point to the new directory
     // Pattern: DIRECTORY="..." or DIRECTORY=...
-    var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
 
     var lines = std.mem.splitScalar(u8, original_content, '\n');
     while (lines.next()) |line| {
         // Check if this line contains WALLET_LOCATION
         if (std.mem.indexOf(u8, line, "WALLET_LOCATION") != null) {
             // Replace with our wallet directory
-            try result.appendSlice("WALLET_LOCATION = (SOURCE = (METHOD = file) (METHOD_DATA = (DIRECTORY=\"");
-            try result.appendSlice(wallet_dir);
-            try result.appendSlice("\")))\n");
+            try result.appendSlice(allocator, "WALLET_LOCATION = (SOURCE = (METHOD = file) (METHOD_DATA = (DIRECTORY=\"");
+            try result.appendSlice(allocator, wallet_dir);
+            try result.appendSlice(allocator, "\")))\n");
         } else {
-            try result.appendSlice(line);
-            try result.append('\n');
+            try result.appendSlice(allocator, line);
+            try result.append(allocator, '\n');
         }
     }
 
