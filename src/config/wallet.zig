@@ -239,6 +239,10 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
         try extractCustomFormatWallet(wallet_dir, decoded, allocator);
     }
 
+    // Rewrite sqlnet.ora to point to the correct wallet directory
+    // Oracle Cloud wallets have hardcoded paths that won't work after extraction
+    try rewriteSqlnetOra(wallet_dir, allocator);
+
     std.log.info("Oracle wallet extracted to: {s}", .{wallet_dir});
 
     // Return the heap-allocated path (caller owns and must free)
@@ -486,6 +490,69 @@ fn writeWalletFile(
     try file.writeAll(content);
 
     std.log.debug("Extracted wallet file: {s} ({d} bytes)", .{ filename, content.len });
+}
+
+/// Rewrite sqlnet.ora to point to the correct wallet directory
+/// Oracle Cloud wallets contain hardcoded WALLET_LOCATION paths that won't work
+/// after extraction to a different directory
+fn rewriteSqlnetOra(wallet_dir: []const u8, allocator: std.mem.Allocator) !void {
+    const sqlnet_path = try std.fs.path.join(allocator, &.{ wallet_dir, "sqlnet.ora" });
+    defer allocator.free(sqlnet_path);
+
+    // Check if sqlnet.ora exists
+    std.fs.accessAbsolute(sqlnet_path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            // No sqlnet.ora - create a minimal one for wallet authentication
+            std.log.debug("Creating sqlnet.ora for wallet authentication", .{});
+            const content = try std.fmt.allocPrint(allocator,
+                \\WALLET_LOCATION = (SOURCE = (METHOD = file) (METHOD_DATA = (DIRECTORY="{s}")))
+                \\SSL_SERVER_DN_MATCH=yes
+                \\
+            , .{wallet_dir});
+            defer allocator.free(content);
+
+            const file = try std.fs.createFileAbsolute(sqlnet_path, .{ .mode = 0o600 });
+            defer file.close();
+            try file.writeAll(content);
+            return;
+        }
+        return err;
+    };
+
+    // Read existing sqlnet.ora
+    const file = try std.fs.openFileAbsolute(sqlnet_path, .{ .mode = .read_only });
+    const original_content = file.readToEndAlloc(allocator, 64 * 1024) catch |err| {
+        file.close();
+        return err;
+    };
+    file.close();
+    defer allocator.free(original_content);
+
+    // Rewrite WALLET_LOCATION line to point to the new directory
+    // Pattern: DIRECTORY="..." or DIRECTORY=...
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+
+    var lines = std.mem.splitScalar(u8, original_content, '\n');
+    while (lines.next()) |line| {
+        // Check if this line contains WALLET_LOCATION
+        if (std.mem.indexOf(u8, line, "WALLET_LOCATION") != null) {
+            // Replace with our wallet directory
+            try result.appendSlice("WALLET_LOCATION = (SOURCE = (METHOD = file) (METHOD_DATA = (DIRECTORY=\"");
+            try result.appendSlice(wallet_dir);
+            try result.appendSlice("\")))\n");
+        } else {
+            try result.appendSlice(line);
+            try result.append('\n');
+        }
+    }
+
+    // Write back
+    const write_file = try std.fs.createFileAbsolute(sqlnet_path, .{ .mode = 0o600 });
+    defer write_file.close();
+    try write_file.writeAll(result.items);
+
+    std.log.debug("Updated sqlnet.ora with wallet location: {s}", .{wallet_dir});
 }
 
 // =============================================================================
