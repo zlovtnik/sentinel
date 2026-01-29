@@ -14,16 +14,14 @@ RUN apt-get update && apt-get install -y \
     libaio1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Zig
-ARG ZIG_VERSION=0.13.0
-RUN curl -fsSL https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz \
+# Install Zig 0.15.2 (stable release)
+RUN curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz \
     | tar -xJ -C /opt \
-    && ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+    && ln -s /opt/zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
 
 # Install Oracle Instant Client
-ARG ORACLE_VERSION=21.11
 RUN mkdir -p /opt/oracle && \
-    curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/2111000/instantclient-basic-linux.x64-${ORACLE_VERSION}.0.0.0dbru.zip \
+    curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/2326100/instantclient-basic-linux.x64-23.26.1.0.0.zip \
     -o /tmp/instantclient.zip && \
     apt-get update && apt-get install -y unzip && \
     unzip -q /tmp/instantclient.zip -d /opt/oracle && \
@@ -35,15 +33,16 @@ RUN mkdir -p /opt/oracle && \
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
 ENV ORACLE_HOME=/opt/oracle/instantclient
 
-# Copy source code
+# Copy source code and ODPI-C dependency
 WORKDIR /app
 COPY build.zig build.zig.zon ./
 COPY src ./src
+COPY deps ./deps
 
-# Build the application
-RUN zig build -Doptimize=ReleaseSafe \
-    -Doracle-include=/opt/oracle/instantclient/sdk/include \
-    -Doracle-lib=/opt/oracle/instantclient
+# Build the application using environment variables (not -D flags)
+# build.zig reads ORACLE_HOME and ODPIC_PATH from environment
+RUN ORACLE_HOME=/opt/oracle/instantclient ODPIC_PATH=deps/odpi \
+    zig build -Doptimize=ReleaseSafe
 
 # =============================================================================
 # Stage 2: Runtime
@@ -63,7 +62,7 @@ ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
 ENV ORACLE_HOME=/opt/oracle/instantclient
 
 # Copy binary from builder
-COPY --from=builder /app/zig-out/bin/sentinel /usr/local/bin/sentinel
+COPY --from=builder /app/zig-out/bin/process-sentinel /usr/local/bin/process-sentinel
 
 # Create directories for wallet and logs
 RUN mkdir -p /opt/sentinel/wallet /opt/sentinel/logs \
@@ -86,4 +85,4 @@ ENV SENTINEL_LOG_LEVEL=info
 EXPOSE 8080
 
 # Entry point
-ENTRYPOINT ["/usr/local/bin/sentinel"]
+ENTRYPOINT ["/usr/local/bin/process-sentinel"]

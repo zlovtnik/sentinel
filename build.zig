@@ -23,35 +23,41 @@ pub fn build(b: *std.Build) void {
     exe.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{odpic_path}) });
     exe.addIncludePath(.{ .cwd_relative = b.fmt("{s}/src", .{odpic_path}) });
 
-    // Compile ODPI-C source files
+    // Compile ODPI-C source files (all .c files from deps/odpi/src)
     const odpi_sources = [_][]const u8{
         "dpiConn.c",
         "dpiContext.c",
         "dpiData.c",
+        "dpiDebug.c",
         "dpiDeqOptions.c",
         "dpiEnqOptions.c",
         "dpiEnv.c",
         "dpiError.c",
         "dpiGen.c",
         "dpiGlobal.c",
+        "dpiHandleList.c",
+        "dpiHandlePool.c",
+        "dpiJson.c",
         "dpiLob.c",
         "dpiMsgProps.c",
+        "dpiObject.c",
         "dpiObjectAttr.c",
         "dpiObjectType.c",
-        "dpiObject.c",
+        "dpiOci.c",
         "dpiOracleType.c",
         "dpiPool.c",
         "dpiQueue.c",
         "dpiRowid.c",
         "dpiSodaColl.c",
+        "dpiSodaCollCursor.c",
         "dpiSodaDb.c",
         "dpiSodaDoc.c",
         "dpiSodaDocCursor.c",
         "dpiStmt.c",
+        "dpiStringList.c",
         "dpiSubscr.c",
         "dpiUtils.c",
         "dpiVar.c",
-        "dpiJson.c",
         "dpiVector.c",
     };
 

@@ -313,7 +313,7 @@ fn setupSignalHandlers() void {
     // Register SIGINT and SIGTERM handlers
     const handler = std.posix.Sigaction{
         .handler = .{ .handler = signalHandler },
-        .mask = 0,
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
 
