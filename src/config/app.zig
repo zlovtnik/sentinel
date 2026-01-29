@@ -28,7 +28,7 @@ pub const AppConfig = struct {
     /// Validate all configuration
     pub fn validate(self: *Self) !void {
         // Validate wallet exists
-        try self.wallet.validate();
+        try self.wallet.validate(self.allocator);
 
         // Validate port ranges
         if (self.env.http_port == 0) {
@@ -41,6 +41,13 @@ pub const AppConfig = struct {
         }
 
         std.log.info("Configuration validated successfully", .{});
+    }
+
+    /// Cleanup allocated resources
+    pub fn deinit(self: *Self) void {
+        _ = self;
+        // Currently no heap allocations to free in AppConfig
+        // This is a placeholder for future cleanup if needed
     }
 
     /// Get Oracle connection string

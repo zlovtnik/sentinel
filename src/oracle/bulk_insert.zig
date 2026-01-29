@@ -87,7 +87,7 @@ pub const BulkLogger = struct {
 
         const flushed = self.executeArrayInsert(conn, context, entries) catch |err| {
             _ = self.flush_errors.fetchAdd(1, .monotonic);
-            std.log.err("Bulk insert failed: {}", .{err});
+            std.log.err("Bulk insert failed: {any}", .{err});
             return err;
         };
 
@@ -279,7 +279,7 @@ pub const BulkLogger = struct {
         // Execute array DML
         if (c.dpiStmt_executeMany(stmt.?, c.DPI_MODE_EXEC_DEFAULT, batch_count) < 0) {
             const err = dpi.getErrorInfo(context);
-            std.log.err("executeMany failed: {}", .{err});
+            std.log.err("executeMany failed: {any}", .{err});
             return error.StatementExecutionFailed;
         }
 

@@ -84,7 +84,7 @@ pub const DpiError = struct {
         _: std.fmt.FormatOptions,
         writer: anytype,
     ) !void {
-        try writer.print("ORA-{d}: {s} (fn: {s}, recoverable: {})", .{
+        try writer.print("ORA-{d}: {s} (fn: {s}, recoverable: {any})", .{
             self.code,
             self.message,
             self.fn_name,
@@ -106,7 +106,7 @@ pub fn getErrorInfo(context: *DpiContext) DpiError {
         .message = if (msg_len > 0) err_info.message[0..msg_len] else "",
         .fn_name = if (fn_len > 0) err_info.fnName[0..fn_len] else "",
         .action = if (action_len > 0) err_info.action[0..action_len] else "",
-        .sql_state = err_info.sqlState,
+        .sql_state = err_info.sqlState[0..6].*,
         .is_recoverable = err_info.isRecoverable != 0,
         .is_warning = err_info.isWarning != 0,
     };
@@ -169,11 +169,11 @@ pub const OdpiError = error{
 };
 
 /// Check ODPI-C return value and convert to Zig error
-pub fn checkResult(result: c_int, context: *DpiContext) OdpiError!void {
+pub fn checkResult(result: c_int, context: *DpiContext, comptime err_to_return: OdpiError) OdpiError!void {
     if (result < 0) {
         const err = getErrorInfo(context);
-        std.log.err("ODPI-C error: {}", .{err});
-        return error.StatementExecutionFailed;
+        std.log.err("ODPI-C error: {any}", .{err});
+        return err_to_return;
     }
 }
 

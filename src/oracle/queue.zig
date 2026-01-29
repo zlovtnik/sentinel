@@ -102,10 +102,10 @@ pub const QueueListener = struct {
         while (self.running.load(.seq_cst)) {
             self.processNextEvent(handler, allocator) catch |err| {
                 _ = self.errors_count.fetchAdd(1, .monotonic);
-                std.log.err("Error processing event: {}", .{err});
+                std.log.err("Error processing event: {any}", .{err});
 
                 // Back off on errors
-                std.time.sleep(std.time.ns_per_s);
+                std.Thread.sleep(std.time.ns_per_s);
             };
         }
 
@@ -164,7 +164,7 @@ pub const QueueListener = struct {
             if (err.code == 25228) { // ORA-25228: timeout in dequeue
                 return; // Normal timeout, continue polling
             }
-            std.log.warn("Dequeue error: {}", .{err});
+            std.log.warn("Dequeue error: {any}", .{err});
             return error.DequeueOperationFailed;
         }
 
@@ -193,9 +193,14 @@ pub const QueueListener = struct {
         _ = self;
 
         var payload: ?*c.dpiObject = null;
-        if (c.dpiMsgProps_getPayload(msg_props, null, null, &payload) < 0) {
+        // We only need the object payload, not the raw bytes (which are for non-object payloads)
+        var raw_value: [*c]const u8 = undefined;
+        var raw_value_length: u32 = 0;
+        if (c.dpiMsgProps_getPayload(msg_props, &payload, &raw_value, &raw_value_length) < 0) {
             return error.PayloadExtractionFailed;
         }
+        // raw_value/raw_value_length contain the raw payload bytes for non-object payloads;
+        // we use the object payload instead, so these are intentionally unused
 
         if (payload == null) {
             return error.NullPayload;
@@ -226,8 +231,14 @@ pub const QueueListener = struct {
 
         // Copy strings to owned memory
         const owned_event_id = try allocator.dupe(u8, event_id);
+        errdefer allocator.free(owned_event_id);
         const owned_process_id = try allocator.dupe(u8, process_id);
+        errdefer allocator.free(owned_process_id);
         const owned_tenant_id = try allocator.dupe(u8, tenant_id);
+        errdefer allocator.free(owned_tenant_id);
+
+        // Extract CLOB payload
+        const owned_payload = try extractLob(&payload_data, allocator);
 
         return .{
             .event_id = owned_event_id,
@@ -235,8 +246,56 @@ pub const QueueListener = struct {
             .process_id = owned_process_id,
             .tenant_id = owned_tenant_id,
             .timestamp_utc = std.time.timestamp(),
-            .payload = null, // TODO: Extract CLOB payload
+            .payload = owned_payload,
         };
+    }
+
+    /// Extract CLOB/BLOB data from dpiData into an owned byte slice
+    /// Returns null for NULL LOBs, empty slice for empty LOBs
+    fn extractLob(data: *c.dpiData, allocator: *std.mem.Allocator) !?[]const u8 {
+        // Handle NULL LOB
+        if (data.isNull != 0) return null;
+
+        const lob: *c.dpiLob = data.value.asLOB orelse return null;
+        defer _ = c.dpiLob_release(lob);
+
+        // Get LOB size in characters (for CLOB) or bytes (for BLOB)
+        var lob_size: u64 = 0;
+        if (c.dpiLob_getSize(lob, &lob_size) < 0) {
+            std.log.warn("Failed to get LOB size", .{});
+            return error.LobOperationFailed;
+        }
+
+        // Empty LOB - allocate zero-length slice so caller can safely free it
+        if (lob_size == 0) {
+            return try allocator.alloc(u8, 0);
+        }
+
+        // Get required buffer size in bytes (handles multi-byte chars for CLOBs)
+        var buffer_size: u64 = 0;
+        if (c.dpiLob_getBufferSize(lob, lob_size, &buffer_size) < 0) {
+            std.log.warn("Failed to get LOB buffer size", .{});
+            return error.LobOperationFailed;
+        }
+
+        // Allocate buffer for LOB content
+        const buffer = try allocator.alloc(u8, @intCast(buffer_size));
+        errdefer allocator.free(buffer);
+
+        // Read LOB bytes (offset is 1-based in Oracle)
+        var bytes_read: u64 = buffer_size;
+        if (c.dpiLob_readBytes(lob, 1, lob_size, buffer.ptr, &bytes_read) < 0) {
+            std.log.warn("Failed to read LOB bytes", .{});
+            return error.LobOperationFailed;
+        }
+
+        // Shrink buffer if fewer bytes were read (common with multi-byte estimation)
+        if (bytes_read < buffer_size) {
+            const shrunk = allocator.realloc(buffer, @intCast(bytes_read)) catch buffer;
+            return shrunk[0..@intCast(bytes_read)];
+        }
+
+        return buffer;
     }
 
     /// Stop the listener

@@ -55,7 +55,7 @@ pub const HttpResponse = struct {
         return .{
             .status_code = 200,
             .status_text = "OK",
-            .headers = std.ArrayList(Header).init(allocator),
+            .headers = .{},
             .body = null,
             .allocator = allocator,
         };
@@ -67,7 +67,7 @@ pub const HttpResponse = struct {
     }
 
     pub fn addHeader(self: *HttpResponse, name: []const u8, value: []const u8) !void {
-        try self.headers.append(.{ .name = name, .value = value });
+        try self.headers.append(self.allocator, .{ .name = name, .value = value });
     }
 
     pub fn setBody(self: *HttpResponse, body: []const u8) void {
@@ -81,8 +81,8 @@ pub const HttpResponse = struct {
 
     /// Serialize response to bytes for sending
     pub fn serialize(self: *HttpResponse) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        const writer = result.writer();
+        var result: std.ArrayList(u8) = .{};
+        const writer = result.writer(self.allocator);
 
         // Status line
         try writer.print("HTTP/1.1 {d} {s}\r\n", .{ self.status_code, self.status_text });
@@ -107,11 +107,11 @@ pub const HttpResponse = struct {
             try writer.writeAll(body);
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     pub fn deinit(self: *HttpResponse) void {
-        self.headers.deinit();
+        self.headers.deinit(self.allocator);
     }
 };
 
@@ -174,13 +174,13 @@ pub const ApiServer = struct {
         while (self.running.load(.seq_cst)) {
             const connection = self.server.?.accept() catch |err| {
                 if (!self.running.load(.seq_cst)) break;
-                std.log.err("Accept error: {}", .{err});
+                std.log.err("Accept error: {any}", .{err});
                 continue;
             };
 
             // Handle connection in a new thread
             _ = std.Thread.spawn(.{}, handleConnectionWrapper, .{ self, connection }) catch |err| {
-                std.log.err("Thread spawn error: {}", .{err});
+                std.log.err("Thread spawn error: {any}", .{err});
                 connection.stream.close();
             };
         }
@@ -207,7 +207,7 @@ pub const ApiServer = struct {
         // Read and parse request
         var buf: [8192]u8 = undefined;
         const bytes_read = connection.stream.read(&buf) catch |err| {
-            std.log.err("Read error: {}", .{err});
+            std.log.err("Read error: {any}", .{err});
             _ = self.requests_error.fetchAdd(1, .monotonic);
             return;
         };
@@ -215,14 +215,14 @@ pub const ApiServer = struct {
         if (bytes_read == 0) return;
 
         const request = self.parseRequest(buf[0..bytes_read], alloc) catch |err| {
-            std.log.err("Parse error: {}", .{err});
+            std.log.err("Parse error: {any}", .{err});
             self.sendError(connection.stream, 400, "Bad Request", alloc);
             return;
         };
 
         // Route and handle request
         self.routeRequest(request, connection.stream, alloc) catch |err| {
-            std.log.err("Handler error: {}", .{err});
+            std.log.err("Handler error: {any}", .{err});
             _ = self.requests_error.fetchAdd(1, .monotonic);
         };
     }
@@ -326,7 +326,6 @@ pub const ApiServer = struct {
     // =========================================================================
 
     fn handleHealth(self: *Self, stream: net.Stream, allocator: std.mem.Allocator) !void {
-        _ = self;
         var response = HttpResponse.init(allocator);
         defer response.deinit();
 

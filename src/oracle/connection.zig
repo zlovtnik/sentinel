@@ -15,7 +15,7 @@ pub const PoolConfig = struct {
     timeout: i32 = 0,
     wait_timeout: u32 = 5000,
     max_lifetime_session: u32 = 3600,
-    get_mode: c_uint = c.DPI_MODE_POOL_GET_TIMEDWAIT,
+    get_mode: u8 = @intCast(c.DPI_MODE_POOL_GET_TIMEDWAIT),
 };
 
 /// Thread-safe Oracle connection pool
@@ -96,7 +96,7 @@ pub const ConnectionPool = struct {
             &pool,
         ) < 0) {
             const pool_err = dpi.getErrorInfo(ctx);
-            std.log.err("Failed to create connection pool: {}", .{pool_err});
+            std.log.err("Failed to create connection pool: {any}", .{pool_err});
             _ = c.dpiContext_destroy(ctx);
             return error.PoolCreationFailed;
         }
@@ -126,7 +126,7 @@ pub const ConnectionPool = struct {
         ) < 0) {
             _ = self.error_count.fetchAdd(1, .monotonic);
             const err = dpi.getErrorInfo(self.context);
-            std.log.err("Failed to acquire connection: {}", .{err});
+            std.log.err("Failed to acquire connection: {any}", .{err});
             return error.ConnectionAcquisitionFailed;
         }
 

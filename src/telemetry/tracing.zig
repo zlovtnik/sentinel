@@ -199,7 +199,7 @@ pub const Tracer = struct {
         span.end();
         if (self.exporter) |exp| {
             exp.exportSpan(span) catch |err| {
-                std.log.err("Failed to export span: {}", .{err});
+                std.log.err("Failed to export span: {any}", .{err});
             };
         }
     }

@@ -94,7 +94,7 @@ pub const WalletConfig = struct {
                     return error.AccessDenied;
                 },
                 else => {
-                    std.log.err("Failed to access Oracle Wallet {s}: {}", .{ sso_path, err });
+                    std.log.err("Failed to access Oracle Wallet {s}: {any}", .{ sso_path, err });
                     return err;
                 },
             }

@@ -260,20 +260,21 @@ pub const JwtValidator = struct {
         const scope = if (root.get("scope")) |v| v.string else null;
 
         // Parse roles - duplicate each string into allocator-owned memory
-        var roles_list = std.ArrayList([]u8).init(self.allocator);
+        var roles_list: std.ArrayList([]const u8) = .{};
         errdefer {
             for (roles_list.items) |role| {
                 self.allocator.free(role);
             }
-            roles_list.deinit();
+            roles_list.deinit(self.allocator);
         }
 
         if (root.get(self.config.roles_claim)) |roles_value| {
             if (roles_value == .array) {
                 for (roles_value.array.items) |role| {
                     if (role == .string) {
-                        const duped_role = try self.allocator.dupe(u8, role.string);
-                        try roles_list.append(duped_role);
+                        const duped_role: []const u8 = try self.allocator.dupe(u8, role.string);
+                        errdefer self.allocator.free(duped_role);
+                        try roles_list.append(self.allocator, duped_role);
                     }
                 }
             }
@@ -287,7 +288,7 @@ pub const JwtValidator = struct {
             .exp = exp,
             .iat = iat,
             .tenant_id = if (tenant_id) |t| try self.allocator.dupe(u8, t) else null,
-            .roles = try roles_list.toOwnedSlice(),
+            .roles = try roles_list.toOwnedSlice(self.allocator),
             .scope = if (scope) |s| try self.allocator.dupe(u8, s) else null,
         };
     }

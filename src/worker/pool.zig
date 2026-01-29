@@ -39,65 +39,79 @@ pub const TaskResult = struct {
     duration_ns: u64 = 0,
 };
 
-/// Thread-safe task queue
+/// Thread-safe task queue using ring buffer for O(1) enqueue/dequeue
 pub const TaskQueue = struct {
-    items: std.ArrayList(Task),
+    buffer: []Task,
+    head: usize, // Index of first element to dequeue
+    tail: usize, // Index where next element will be enqueued
+    count: usize, // Current number of elements
     mutex: std.Thread.Mutex,
     condition: std.Thread.Condition,
     capacity: usize,
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, capacity: usize) Self {
+    pub fn init(allocator: std.mem.Allocator, capacity: usize) !Self {
+        const buffer = try allocator.alloc(Task, capacity);
         return .{
-            .items = std.ArrayList(Task).init(allocator),
+            .buffer = buffer,
+            .head = 0,
+            .tail = 0,
+            .count = 0,
             .mutex = .{},
             .condition = .{},
             .capacity = capacity,
+            .allocator = allocator,
         };
     }
 
-    /// Push a task to the queue
+    /// Push a task to the queue - O(1)
     pub fn push(self: *Self, task: Task) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.items.items.len >= self.capacity) {
+        if (self.count >= self.capacity) {
             return error.QueueFull;
         }
 
-        try self.items.append(task);
+        self.buffer[self.tail] = task;
+        self.tail = (self.tail + 1) % self.capacity;
+        self.count += 1;
         self.condition.signal();
     }
 
-    /// Pop a task from the queue (blocking with timeout)
+    /// Pop a task from the queue (blocking with timeout) - O(1)
     pub fn pop(self: *Self, timeout_ns: u64) !Task {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        if (self.items.items.len == 0) {
+        if (self.count == 0) {
             // Wait for signal with timeout
             self.condition.timedWait(&self.mutex, timeout_ns) catch {
                 return error.Timeout;
             };
         }
 
-        if (self.items.items.len == 0) {
+        if (self.count == 0) {
             return error.EmptyQueue;
         }
 
-        return self.items.orderedRemove(0);
+        const task = self.buffer[self.head];
+        self.head = (self.head + 1) % self.capacity;
+        self.count -= 1;
+        return task;
     }
 
     /// Get current queue size
     pub fn size(self: *Self) usize {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.items.items.len;
+        return self.count;
     }
 
     pub fn deinit(self: *Self) void {
-        self.items.deinit();
+        self.allocator.free(self.buffer);
     }
 };
 
@@ -115,12 +129,13 @@ pub const WorkerPool = struct {
     oracle_pool: *ConnectionPool,
     config: WorkerConfig,
     allocator: std.mem.Allocator,
-    shutdown: std.atomic.Value(bool),
+    is_shutdown: std.atomic.Value(bool),
 
     // Metrics
     tasks_completed: std.atomic.Value(u64),
     tasks_failed: std.atomic.Value(u64),
     total_processing_time_ns: std.atomic.Value(u64),
+    failed_workers_count: std.atomic.Value(u64),
 
     const Self = @This();
 
@@ -143,14 +158,15 @@ pub const WorkerPool = struct {
 
         return .{
             .workers = workers,
-            .task_queue = TaskQueue.init(allocator, config.queue_capacity),
+            .task_queue = try TaskQueue.init(allocator, config.queue_capacity),
             .oracle_pool = oracle_pool,
             .config = config,
             .allocator = allocator,
-            .shutdown = std.atomic.Value(bool).init(false),
+            .is_shutdown = std.atomic.Value(bool).init(false),
             .tasks_completed = std.atomic.Value(u64).init(0),
             .tasks_failed = std.atomic.Value(u64).init(0),
             .total_processing_time_ns = std.atomic.Value(u64).init(0),
+            .failed_workers_count = std.atomic.Value(u64).init(0),
         };
     }
 
@@ -161,7 +177,7 @@ pub const WorkerPool = struct {
         var spawned: usize = 0;
         errdefer {
             // On error, signal shutdown and join already-spawned threads
-            self.shutdown.store(true, .seq_cst);
+            self.is_shutdown.store(true, .seq_cst);
             for (self.workers[0..spawned]) |*worker| {
                 worker.thread.join();
             }
@@ -177,7 +193,7 @@ pub const WorkerPool = struct {
 
     /// Submit a task to the pool
     pub fn submit(self: *Self, task: Task) !void {
-        if (self.shutdown.load(.seq_cst)) {
+        if (self.is_shutdown.load(.seq_cst)) {
             return error.PoolShuttingDown;
         }
         try self.task_queue.push(task);
@@ -189,7 +205,9 @@ pub const WorkerPool = struct {
 
         // Each worker acquires its own Oracle connection
         const conn = pool.oracle_pool.acquire() catch |err| {
-            std.log.err("Worker {d} failed to acquire connection: {}", .{ worker.id, err });
+            // Increment failed worker count so pool can track degraded capacity
+            _ = pool.failed_workers_count.fetchAdd(1, .seq_cst);
+            std.log.err("CRITICAL: Worker {d} failed to acquire Oracle connection: {any} - worker exiting, pool capacity reduced", .{ worker.id, err });
             return;
         };
         defer pool.oracle_pool.release(conn);
@@ -197,7 +215,7 @@ pub const WorkerPool = struct {
         // Convert task_timeout_ms to nanoseconds for pop timeout
         const timeout_ns = pool.config.task_timeout_ms * 1_000_000;
 
-        while (!pool.shutdown.load(.seq_cst)) {
+        while (!pool.is_shutdown.load(.seq_cst)) {
             // Wait for task with configured timeout
             const task = pool.task_queue.pop(timeout_ns) catch {
                 continue;
@@ -272,14 +290,16 @@ pub const WorkerPool = struct {
             .tasks_failed = self.tasks_failed.load(.monotonic),
             .total_processing_time_ns = self.total_processing_time_ns.load(.monotonic),
             .num_workers = self.workers.len,
-            .is_running = !self.shutdown.load(.monotonic),
+            // Use .seq_cst for consistency with shutdown() and submit() which also use .seq_cst
+            .is_running = !self.is_shutdown.load(.seq_cst),
+            .failed_workers = self.failed_workers_count.load(.monotonic),
         };
     }
 
     /// Graceful shutdown
     pub fn shutdown(self: *Self) void {
         std.log.info("Shutting down worker pool...", .{});
-        self.shutdown.store(true, .seq_cst);
+        self.is_shutdown.store(true, .seq_cst);
 
         for (self.workers) |*worker| {
             worker.thread.join();
@@ -310,10 +330,18 @@ pub const PoolStats = struct {
     total_processing_time_ns: u64,
     num_workers: usize,
     is_running: bool,
+    failed_workers: u64,
 
     pub fn avgTaskTimeMs(self: PoolStats) f64 {
         const total = self.tasks_completed + self.tasks_failed;
         if (total == 0) return 0;
         return @as(f64, @floatFromInt(self.total_processing_time_ns)) / @as(f64, @floatFromInt(total)) / 1_000_000.0;
+    }
+
+    /// Returns the effective worker capacity (num_workers - failed_workers)
+    pub fn activeWorkers(self: PoolStats) u64 {
+        const total: u64 = @intCast(self.num_workers);
+        if (self.failed_workers >= total) return 0;
+        return total - self.failed_workers;
     }
 };

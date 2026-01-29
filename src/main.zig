@@ -6,13 +6,18 @@ const builtin = @import("builtin");
 
 const config = @import("config/app.zig");
 const ConnectionPool = @import("oracle/connection.zig").ConnectionPool;
-const QueueListener = @import("oracle/queue.zig").QueueListener;
+const queue_mod = @import("oracle/queue.zig");
+const QueueListener = queue_mod.QueueListener;
+const SentinelEvent = queue_mod.SentinelEvent;
 const WorkerPool = @import("worker/pool.zig").WorkerPool;
 const ApiServer = @import("api/server.zig").ApiServer;
 const metrics = @import("telemetry/metrics.zig");
 const HealthChecker = @import("telemetry/health.zig").HealthChecker;
 
 const log = std.log.scoped(.sentinel);
+
+/// Application version - single source of truth
+const VERSION = "0.1.0";
 
 /// Application state
 const AppState = struct {
@@ -46,21 +51,21 @@ pub fn main() !void {
 
     // Load configuration
     log.info("Loading configuration...", .{});
-    var app_config = config.AppConfig.load() catch |err| {
-        log.err("Failed to load configuration: {}", .{err});
+    var app_config = config.AppConfig.init(allocator) catch |err| {
+        log.err("Failed to load configuration: {any}", .{err});
         return err;
     };
     defer app_config.deinit();
 
     // Validate configuration
     app_config.validate() catch |err| {
-        log.err("Configuration validation failed: {}", .{err});
+        log.err("Configuration validation failed: {any}", .{err});
         return err;
     };
 
     log.info("Configuration loaded successfully", .{});
-    log.info("Service: {s}", .{app_config.sentinel.service_name});
-    log.info("Instance: {s}", .{app_config.sentinel.instance_id});
+    log.info("HTTP Port: {d}", .{app_config.env.http_port});
+    log.info("Worker Threads: {d}", .{app_config.env.worker_threads});
 
     // Initialize application state
     var state = AppState{
@@ -82,29 +87,26 @@ pub fn main() !void {
 
     // Main event loop
     log.info("Process Sentinel is now running", .{});
-    log.info("API endpoint: http://{s}:{d}", .{
-        app_config.sentinel.listen_address,
-        app_config.sentinel.listen_port,
+    log.info("API endpoint: http://0.0.0.0:{d}", .{
+        app_config.env.http_port,
     });
 
     // Wait for shutdown signal
     while (state.running.load(.monotonic)) {
-        std.time.sleep(100 * std.time.ns_per_ms);
+        std.Thread.sleep(100 * std.time.ns_per_ms);
     }
 
     log.info("Shutdown signal received, gracefully shutting down...", .{});
 }
 
 fn printBanner() void {
-    const banner =
-        \\
-        \\  ╔═══════════════════════════════════════════╗
-        \\  ║       PROCESS SENTINEL v0.1.0             ║
+    std.debug.print(
+        \\\n        \\  ╔═══════════════════════════════════════════╗
+        \\  ║       PROCESS SENTINEL v{s:<17}║
         \\  ║   Oracle-Zig Real-Time Process Monitor    ║
         \\  ╚═══════════════════════════════════════════╝
         \\
-    ;
-    std.debug.print("{s}\n", .{banner});
+    , .{VERSION});
 }
 
 fn initializeComponents(state: *AppState) !void {
@@ -118,19 +120,26 @@ fn initializeComponents(state: *AppState) !void {
     // Initialize connection pool
     log.info("Initializing Oracle connection pool...", .{});
     const pool = try allocator.create(ConnectionPool);
-    pool.* = try ConnectionPool.init(allocator, .{
-        .min_connections = cfg.pool.min_connections,
-        .max_connections = cfg.pool.max_connections,
-        .connection_timeout_ms = cfg.pool.connection_timeout_ms,
-        .idle_timeout_ms = cfg.pool.idle_timeout_ms,
-        .wallet_location = cfg.oracle.wallet_location,
-        .wallet_password = cfg.oracle.wallet_password,
-        .connect_string = cfg.oracle.connect_string,
-    });
+    pool.* = try ConnectionPool.init(
+        cfg.wallet,
+        cfg.env.username,
+        cfg.env.password,
+        .{
+            .min_sessions = cfg.env.pool_min_sessions,
+            .max_sessions = cfg.env.pool_max_sessions,
+            .session_increment = cfg.env.pool_session_increment,
+            .ping_interval = cfg.env.pool_ping_interval,
+            .timeout = cfg.env.pool_timeout,
+            .get_mode = cfg.env.pool_get_mode,
+            .wait_timeout = cfg.env.pool_wait_timeout,
+            .max_lifetime_session = cfg.env.pool_max_lifetime_session,
+        },
+        allocator,
+    );
     state.pool = pool;
     log.info("Connection pool initialized (min={d}, max={d})", .{
-        cfg.pool.min_connections,
-        cfg.pool.max_connections,
+        cfg.env.pool_min_sessions,
+        cfg.env.pool_max_sessions,
     });
 
     // Initialize health checker
@@ -142,29 +151,27 @@ fn initializeComponents(state: *AppState) !void {
     // Initialize worker pool
     log.info("Initializing worker pool...", .{});
     const workers = try allocator.create(WorkerPool);
-    workers.* = try WorkerPool.init(allocator, .{
-        .thread_count = cfg.sentinel.worker_threads,
-        .queue_size = 10000,
-        .pool = pool,
+    workers.* = try WorkerPool.init(allocator, pool, .{
+        .num_workers = cfg.env.worker_threads,
+        .queue_capacity = 10000,
+        .task_timeout_ms = 30000,
     });
     state.worker_pool = workers;
-    log.info("Worker pool initialized with {d} threads", .{cfg.sentinel.worker_threads});
+    log.info("Worker pool initialized with {d} threads", .{cfg.env.worker_threads});
 
     // Initialize API server
     log.info("Initializing API server...", .{});
     const api = try allocator.create(ApiServer);
     api.* = ApiServer.init(allocator, .{
-        .address = cfg.sentinel.listen_address,
-        .port = cfg.sentinel.listen_port,
-        .pool = pool,
-        .health_checker = health,
-    });
+        .port = cfg.env.http_port,
+        .backlog = 128,
+    }, pool, null);
     state.api_server = api;
 
     // Initialize queue listener
     log.info("Initializing AQ listener...", .{});
     const queue = try allocator.create(QueueListener);
-    queue.* = QueueListener.init(pool, workers, cfg.sentinel.queue_name);
+    queue.* = QueueListener.init(pool, cfg.env.queue_name, cfg.env.queue_event_type);
     state.queue_listener = queue;
 }
 
@@ -189,15 +196,31 @@ fn startServices(state: *AppState) !void {
 }
 
 fn apiServerThread(api: *ApiServer) void {
-    api.start() catch |err| {
-        log.err("API server error: {}", .{err});
+    api.run() catch |err| {
+        log.err("API server error: {any}", .{err});
     };
 }
 
+/// Default event handler for queue messages
+fn defaultEventHandler(event: SentinelEvent, _: *std.mem.Allocator) void {
+    log.info("Received event: {any}", .{event});
+}
+
 fn queueListenerThread(queue: *QueueListener) void {
-    queue.listen() catch |err| {
-        log.err("Queue listener error: {}", .{err});
+    log.info("Queue listener thread started for queue: {s}", .{queue.queue_name});
+
+    // Use a general purpose allocator for the listener
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Use the public listen method which has proper error handling and backoff
+    var alloc_copy = allocator;
+    queue.listen(defaultEventHandler, &alloc_copy) catch |err| {
+        log.err("Queue listener error: {any}", .{err});
     };
+
+    log.info("Queue listener thread stopped", .{});
 }
 
 /// Attempt to join a thread with a bounded timeout.
@@ -206,8 +229,11 @@ fn queueListenerThread(queue: *QueueListener) void {
 /// a blocking join. The stop() methods should cause threads to exit promptly.
 /// If threads hang, this will still block - consider OS-level thread
 /// cancellation as a last resort in production.
+/// TODO: Timeout not implemented - always returns true. When Zig adds
+/// thread.tryJoin() or joinWithTimeout(), reinstate timeout handling in
+/// shutdownComponents for state.queue_thread and state.api_thread.
 fn joinWithTimeout(thread: std.Thread, timeout_ns: u64) bool {
-    _ = timeout_ns; // TODO: Use when Zig adds thread.tryJoin() or joinWithTimeout()
+    _ = timeout_ns;
     // For now, we do a blocking join since our stop() methods are designed
     // to make threads exit promptly. The timeout parameter is reserved for
     // future use when Zig supports timed joins.
@@ -235,27 +261,15 @@ fn shutdownComponents(state: *AppState) void {
     const join_timeout_ns: u64 = 10_000_000_000; // 10 seconds
 
     if (state.queue_thread) |thread| {
-        const joined = joinWithTimeout(thread, join_timeout_ns);
-        if (joined) {
-            state.queue_thread = null;
-            log.info("Queue listener thread joined", .{});
-        } else {
-            log.err("Queue listener thread did not exit within timeout - marking as leaked", .{});
-            // Thread handle leaked, but we proceed with shutdown
-            state.queue_thread = null;
-        }
+        _ = joinWithTimeout(thread, join_timeout_ns);
+        state.queue_thread = null;
+        log.info("Queue listener thread joined", .{});
     }
 
     if (state.api_thread) |thread| {
-        const joined = joinWithTimeout(thread, join_timeout_ns);
-        if (joined) {
-            state.api_thread = null;
-            log.info("API server thread joined", .{});
-        } else {
-            log.err("API server thread did not exit within timeout - marking as leaked", .{});
-            // Thread handle leaked, but we proceed with shutdown
-            state.api_thread = null;
-        }
+        _ = joinWithTimeout(thread, join_timeout_ns);
+        state.api_thread = null;
+        log.info("API server thread joined", .{});
     }
 
     // Stop worker pool
@@ -299,21 +313,17 @@ fn setupSignalHandlers() void {
     // Register SIGINT and SIGTERM handlers
     const handler = std.posix.Sigaction{
         .handler = .{ .handler = signalHandler },
-        .mask = std.posix.empty_sigset,
+        .mask = 0,
         .flags = 0,
     };
 
-    std.posix.sigaction(std.posix.SIG.INT, &handler, null) catch {
-        log.warn("Failed to setup SIGINT handler", .{});
-    };
-    std.posix.sigaction(std.posix.SIG.TERM, &handler, null) catch {
-        log.warn("Failed to setup SIGTERM handler", .{});
-    };
+    _ = std.posix.sigaction(std.posix.SIG.INT, &handler, null);
+    _ = std.posix.sigaction(std.posix.SIG.TERM, &handler, null);
 
     log.info("Signal handlers registered", .{});
 }
 
-fn signalHandler(sig: i32) callconv(.C) void {
+fn signalHandler(sig: i32) callconv(.c) void {
     _ = sig;
     if (global_state) |state| {
         state.running.store(false, .monotonic);
@@ -326,7 +336,7 @@ fn signalHandler(sig: i32) callconv(.C) void {
 
 /// Get application version
 pub fn getVersion() []const u8 {
-    return "0.1.0";
+    return VERSION;
 }
 
 /// Get build info

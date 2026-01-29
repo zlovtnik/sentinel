@@ -12,9 +12,11 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "process-sentinel",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Link ODPI-C (static)
@@ -78,9 +80,11 @@ pub fn build(b: *std.Build) void {
 
     // Test configuration
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Add ODPI-C for tests too
@@ -97,9 +101,11 @@ pub fn build(b: *std.Build) void {
     // Check step (faster feedback - syntax only)
     const check = b.addExecutable(.{
         .name = "process-sentinel",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     check.addIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{odpic_path}) });
     check.addIncludePath(.{ .cwd_relative = b.fmt("{s}/src", .{odpic_path}) });

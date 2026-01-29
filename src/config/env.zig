@@ -2,6 +2,8 @@
 //! Loads all configuration from environment variables for 12-factor compliance.
 
 const std = @import("std");
+const dpi = @import("../c_imports.zig");
+const c = dpi.c;
 
 /// Complete application configuration loaded from environment
 pub const Config = struct {
@@ -26,6 +28,7 @@ pub const Config = struct {
     http_port: u16,
     worker_threads: usize,
     queue_name: []const u8,
+    queue_event_type: []const u8,
     log_batch_size: usize,
     heartbeat_interval_sec: u32,
     process_timeout_sec: u32,
@@ -38,6 +41,9 @@ pub const Config = struct {
     pool_session_increment: u32,
     pool_ping_interval: i32,
     pool_wait_timeout: u32,
+    pool_timeout: i32,
+    pool_get_mode: u8,
+    pool_max_lifetime_session: u32,
 
     // =========================================================================
     // Telemetry Configuration
@@ -91,6 +97,7 @@ pub const Config = struct {
             .http_port = parseU16("SENTINEL_HTTP_PORT", 8090),
             .worker_threads = parseUsize("SENTINEL_WORKER_THREADS", 4),
             .queue_name = std.posix.getenv("SENTINEL_QUEUE_NAME") orelse "SENTINEL_QUEUE",
+            .queue_event_type = std.posix.getenv("SENTINEL_QUEUE_EVENT_TYPE") orelse "SENTINEL_EVENT_T",
             .log_batch_size = parseUsize("SENTINEL_LOG_BATCH_SIZE", 1000),
             .heartbeat_interval_sec = parseU32("SENTINEL_HEARTBEAT_INTERVAL_SEC", 30),
             .process_timeout_sec = parseU32("SENTINEL_PROCESS_TIMEOUT_SEC", 3600),
@@ -101,6 +108,9 @@ pub const Config = struct {
             .pool_session_increment = parseU32("SENTINEL_POOL_SESSION_INCREMENT", 1),
             .pool_ping_interval = parseI32("SENTINEL_POOL_PING_INTERVAL", 60),
             .pool_wait_timeout = parseU32("SENTINEL_POOL_WAIT_TIMEOUT", 5000),
+            .pool_timeout = parseI32("SENTINEL_POOL_TIMEOUT", 5000),
+            .pool_get_mode = parsePoolGetMode("SENTINEL_POOL_GET_MODE", @intCast(c.DPI_MODE_POOL_GET_TIMEDWAIT)),
+            .pool_max_lifetime_session = parseU32("SENTINEL_POOL_MAX_LIFETIME_SESSION", 3600),
 
             // Telemetry
             .otel_endpoint = std.posix.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
@@ -149,6 +159,11 @@ fn parseI32(name: []const u8, default: i32) i32 {
 fn parseUsize(name: []const u8, default: usize) usize {
     const val = std.posix.getenv(name) orelse return default;
     return std.fmt.parseInt(usize, val, 10) catch default;
+}
+
+fn parsePoolGetMode(name: []const u8, default: u8) u8 {
+    const val = std.posix.getenv(name) orelse return default;
+    return std.fmt.parseInt(u8, val, 10) catch default;
 }
 
 // =============================================================================
