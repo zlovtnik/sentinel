@@ -28,7 +28,7 @@ RUN microdnf install -y oracle-instantclient-release-el8 && \
     microdnf clean all
 
 ENV LD_LIBRARY_PATH=/usr/lib/oracle/21/client64/lib
-ENV ORACLE_HOME=/usr/lib/oracle/21/client64
+ENV ORACLE_HOME=/usr/lib/oracle/21/client64/lib
 
 # Copy source code
 WORKDIR /app
@@ -43,7 +43,7 @@ RUN mkdir -p deps && \
 
 # Build the application
 # Use baseline x86_64 CPU to avoid illegal instruction errors on cloud VMs
-RUN ORACLE_HOME=/usr/lib/oracle/21/client64 ODPIC_PATH=deps/odpi \
+RUN ORACLE_HOME=/usr/lib/oracle/21/client64/lib ODPIC_PATH=deps/odpi \
     zig build -Doptimize=ReleaseSafe -Dcpu=x86_64
 
 # =============================================================================
