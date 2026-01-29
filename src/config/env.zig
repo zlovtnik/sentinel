@@ -75,11 +75,22 @@ pub const Config = struct {
     };
 
     /// Load configuration from environment variables
+    /// Note: If using ORACLE_WALLET_BASE64, extraction must occur before calling this function
+    /// (typically done by wallet.extractBase64Wallet in app.zig init)
     pub fn load() !Config {
+        // Wallet location: prefer explicit path, fall back to base64 extraction path
+        // ORACLE_WALLET_EXTRACT_PATH can override the default extraction location
+        const base64_fallback: [:0]const u8 = if (std.posix.getenv("ORACLE_WALLET_EXTRACT_PATH")) |p|
+            p
+        else
+            "/tmp/oracle_wallet";
+        const wallet_location = std.posix.getenv("ORACLE_WALLET_LOCATION") orelse
+            (if (std.posix.getenv("ORACLE_WALLET_BASE64") != null) base64_fallback else null) orelse
+            return error.MissingWalletLocation;
+
         return .{
             // Oracle
-            .wallet_location = std.posix.getenv("ORACLE_WALLET_LOCATION") orelse
-                return error.MissingWalletLocation,
+            .wallet_location = wallet_location,
             .tns_name = std.posix.getenv("ORACLE_TNS_NAME") orelse
                 return error.MissingTnsName,
             .username = std.posix.getenv("ORACLE_USERNAME") orelse
