@@ -209,7 +209,7 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
     };
 
     // Allocate heap copy of the path to return
-    const wallet_dir = try allocator.dupeZ(u8, wallet_dir_slice);
+    const wallet_dir = try allocator.dupe(u8, wallet_dir_slice);
     errdefer allocator.free(wallet_dir);
 
     // Create wallet directory with secure permissions
@@ -234,7 +234,7 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
 
     // Detect format: ZIP files start with "PK" (0x50 0x4B)
     if (decoded.len >= 2 and decoded[0] == 0x50 and decoded[1] == 0x4B) {
-        try extractZipWallet(wallet_dir, decoded);
+        try extractZipWallet(wallet_dir, decoded, allocator);
     } else {
         try extractCustomFormatWallet(wallet_dir, decoded, allocator);
     }
@@ -247,7 +247,7 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
 
 /// Extract wallet files from a ZIP archive
 /// Parses ZIP format manually to avoid std.zip API issues
-fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8) !void {
+fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std.mem.Allocator) !void {
     var dir = try std.fs.openDirAbsolute(wallet_dir, .{});
     defer dir.close();
 
@@ -293,7 +293,7 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8) !void {
 
         const compression = std.mem.readInt(u16, zip_data[cd_pos + 10 ..][0..2], .little);
         const compressed_size = std.mem.readInt(u32, zip_data[cd_pos + 20 ..][0..4], .little);
-        _ = std.mem.readInt(u32, zip_data[cd_pos + 24 ..][0..4], .little); // uncompressed_size
+        const uncompressed_size = std.mem.readInt(u32, zip_data[cd_pos + 24 ..][0..4], .little);
         const filename_len = std.mem.readInt(u16, zip_data[cd_pos + 28 ..][0..2], .little);
         const extra_len = std.mem.readInt(u16, zip_data[cd_pos + 30 ..][0..2], .little);
         const comment_len = std.mem.readInt(u16, zip_data[cd_pos + 32 ..][0..2], .little);
@@ -310,8 +310,10 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8) !void {
             const filename = std.fs.path.basename(full_filename);
 
             if (filename.len > 0) {
-                // Check if this is a critical wallet file
-                const is_critical = std.mem.endsWith(u8, filename, ".sso") or
+                // Check if this is a critical wallet file (explicitly includes cwallet.sso and ewallet.p12)
+                const is_critical = std.mem.eql(u8, filename, "cwallet.sso") or
+                    std.mem.eql(u8, filename, "ewallet.p12") or
+                    std.mem.endsWith(u8, filename, ".sso") or
                     std.mem.endsWith(u8, filename, ".p12");
 
                 // Read local file header to get actual data offset
@@ -346,12 +348,43 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8) !void {
                             std.log.debug("Extracted wallet file: {s} ({d} bytes)", .{ filename, file_data.len });
                             successful_extractions += 1;
                         } else if (compression == 8) {
-                            // Deflate compression - critical wallet files must be extractable
-                            if (is_critical) {
-                                std.log.err("Critical wallet file {s} uses deflate compression (not supported)", .{filename});
-                                return error.DeflateCompressionNotSupported;
-                            }
-                            std.log.warn("Skipping deflated file {s} (compression not supported)", .{filename});
+                            // Deflate compression - inflate using zlib
+                            const compressed = zip_data[data_offset..data_end];
+                            var input_reader: std.Io.Reader = .fixed(compressed);
+                            const history = try allocator.alloc(u8, std.compress.flate.max_window_len);
+                            defer allocator.free(history);
+                            var inflater = std.compress.flate.Decompress.init(&input_reader, .raw, history);
+                            const inflated = inflater.reader.readAlloc(
+                                allocator,
+                                @intCast(uncompressed_size),
+                            ) catch |err| {
+                                if (is_critical) {
+                                    std.log.err("Failed to inflate critical wallet file {s}: {any}", .{ filename, err });
+                                    return error.DeflateDecompressionFailed;
+                                }
+                                std.log.warn("Failed to inflate file {s}: {any}", .{ filename, err });
+                                cd_pos += 46 + filename_len + extra_len + comment_len;
+                                entries_processed += 1;
+                                continue;
+                            };
+                            defer allocator.free(inflated);
+
+                            const file = dir.createFile(filename, .{ .mode = 0o600 }) catch |err| {
+                                std.log.err("Failed to create {s}: {any}", .{ filename, err });
+                                cd_pos += 46 + filename_len + extra_len + comment_len;
+                                entries_processed += 1;
+                                continue;
+                            };
+                            defer file.close();
+                            file.writeAll(inflated) catch |err| {
+                                std.log.err("Failed to write {s}: {any}", .{ filename, err });
+                                cd_pos += 46 + filename_len + extra_len + comment_len;
+                                entries_processed += 1;
+                                continue;
+                            };
+
+                            std.log.debug("Extracted wallet file: {s} ({d} bytes)", .{ filename, inflated.len });
+                            successful_extractions += 1;
                         } else {
                             if (is_critical) {
                                 std.log.err("Critical wallet file {s} uses unsupported compression {d}", .{ filename, compression });
