@@ -5,6 +5,9 @@ const std = @import("std");
 const env = @import("env.zig");
 const wallet = @import("wallet.zig");
 
+// C library setenv - available when linking libc
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 /// Application context holding all runtime configuration
 pub const AppConfig = struct {
     env: env.Config,
@@ -35,13 +38,13 @@ pub const AppConfig = struct {
             std.log.info("Using extracted wallet from ORACLE_WALLET_BASE64", .{});
 
             // Set TNS_ADMIN environment variable so Oracle can find tnsnames.ora and sqlnet.ora
-            // The path must be null-terminated for the POSIX setenv call
+            // The path must be null-terminated for the C setenv call
             const path_z = try allocator.dupeZ(u8, path);
             defer allocator.free(path_z);
-            std.posix.setenv("TNS_ADMIN", path_z, true) catch |err| {
-                std.log.err("Failed to set TNS_ADMIN environment variable: {any}", .{err});
+            if (setenv("TNS_ADMIN", path_z.ptr, 1) != 0) {
+                std.log.err("Failed to set TNS_ADMIN environment variable", .{});
                 return error.EnvironmentSetupFailed;
-            };
+            }
             std.log.info("TNS_ADMIN set to: {s}", .{path});
         }
 
