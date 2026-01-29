@@ -64,7 +64,9 @@ pub fn build(b: *std.Build) void {
     for (odpi_sources) |src| {
         exe.addCSourceFile(.{
             .file = b.path(b.fmt("{s}/src/{s}", .{ odpic_path, src })),
-            .flags = &.{ "-std=c11", "-O3", "-fPIC" },
+            // Use -O2 instead of -O3 and disable auto-vectorization to avoid
+            // illegal instructions on cloud VMs with older CPUs
+            .flags = &.{ "-std=c11", "-O2", "-fPIC", "-march=x86-64", "-mtune=generic", "-fno-tree-vectorize" },
         });
     }
 
