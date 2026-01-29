@@ -88,6 +88,7 @@ pub const AppConfig = struct {
 /// Helper to cleanup wallet directory (used by errdefer and deinit)
 fn cleanupWalletDir(path: []const u8) void {
     var dir = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch return;
+    defer dir.close();
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind == .directory) {
@@ -96,7 +97,6 @@ fn cleanupWalletDir(path: []const u8) void {
             dir.deleteFile(entry.name) catch {};
         }
     }
-    dir.close();
     std.fs.deleteDirAbsolute(path) catch {};
 }
 

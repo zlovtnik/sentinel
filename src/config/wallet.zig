@@ -212,25 +212,11 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
     const wallet_dir = try allocator.dupeZ(u8, wallet_dir_slice);
     errdefer allocator.free(wallet_dir);
 
-    // Create wallet directory with secure permissions (0o700)
-    std.fs.makeDirAbsolute(wallet_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            // Clean existing directory
-            var dir = std.fs.openDirAbsolute(wallet_dir, .{ .iterate = true }) catch |e| {
-                std.log.err("Failed to open existing wallet dir for cleanup: {any}", .{e});
-                return e;
-            };
-            defer dir.close();
-            var iter = dir.iterate();
-            while (iter.next() catch null) |entry| {
-                if (entry.kind == .directory) {
-                    dir.deleteTree(entry.name) catch {};
-                } else {
-                    dir.deleteFile(entry.name) catch {};
-                }
-            }
-        },
-        else => return err,
+    // Create wallet directory with secure permissions
+    // Since we use PID+timestamp for uniqueness, PathAlreadyExists indicates a race condition
+    std.fs.makeDirAbsolute(wallet_dir) catch |err| {
+        std.log.err("Failed to create wallet directory {s}: {any}", .{ wallet_dir, err });
+        return err;
     };
 
     // Decode the outer base64 wrapper
@@ -248,7 +234,7 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
 
     // Detect format: ZIP files start with "PK" (0x50 0x4B)
     if (decoded.len >= 2 and decoded[0] == 0x50 and decoded[1] == 0x4B) {
-        try extractZipWallet(wallet_dir, decoded, allocator);
+        try extractZipWallet(wallet_dir, decoded);
     } else {
         try extractCustomFormatWallet(wallet_dir, decoded, allocator);
     }
@@ -261,9 +247,7 @@ pub fn extractBase64Wallet(allocator: std.mem.Allocator) !?[]const u8 {
 
 /// Extract wallet files from a ZIP archive
 /// Parses ZIP format manually to avoid std.zip API issues
-fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
+fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8) !void {
     var dir = try std.fs.openDirAbsolute(wallet_dir, .{});
     defer dir.close();
 
@@ -272,13 +256,16 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
     var eocd_pos: ?usize = null;
     if (zip_data.len >= 22) {
         var i: usize = zip_data.len - 22;
-        while (i > 0) : (i -= 1) {
-            if (zip_data[i] == 0x50 and zip_data[i + 1] == 0x4B and
+        while (true) {
+            if (i + 3 < zip_data.len and
+                zip_data[i] == 0x50 and zip_data[i + 1] == 0x4B and
                 zip_data[i + 2] == 0x05 and zip_data[i + 3] == 0x06)
             {
                 eocd_pos = i;
                 break;
             }
+            if (i == 0) break;
+            i -= 1;
         }
     }
 
@@ -293,9 +280,10 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
     const total_entries = std.mem.readInt(u16, zip_data[eocd + 10 ..][0..2], .little);
 
     var cd_pos: usize = cd_offset;
-    var file_count: u16 = 0;
+    var entries_processed: u16 = 0;
+    var successful_extractions: u16 = 0;
 
-    while (file_count < total_entries and cd_pos + 46 <= zip_data.len) {
+    while (entries_processed < total_entries and cd_pos + 46 <= zip_data.len) {
         // Check central directory signature "PK\x01\x02"
         if (zip_data[cd_pos] != 0x50 or zip_data[cd_pos + 1] != 0x4B or
             zip_data[cd_pos + 2] != 0x01 or zip_data[cd_pos + 3] != 0x02)
@@ -305,7 +293,7 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
 
         const compression = std.mem.readInt(u16, zip_data[cd_pos + 10 ..][0..2], .little);
         const compressed_size = std.mem.readInt(u32, zip_data[cd_pos + 20 ..][0..4], .little);
-        const uncompressed_size = std.mem.readInt(u32, zip_data[cd_pos + 24 ..][0..4], .little);
+        _ = std.mem.readInt(u32, zip_data[cd_pos + 24 ..][0..4], .little); // uncompressed_size
         const filename_len = std.mem.readInt(u16, zip_data[cd_pos + 28 ..][0..2], .little);
         const extra_len = std.mem.readInt(u16, zip_data[cd_pos + 30 ..][0..2], .little);
         const comment_len = std.mem.readInt(u16, zip_data[cd_pos + 32 ..][0..2], .little);
@@ -322,6 +310,10 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
             const filename = std.fs.path.basename(full_filename);
 
             if (filename.len > 0) {
+                // Check if this is a critical wallet file
+                const is_critical = std.mem.endsWith(u8, filename, ".sso") or
+                    std.mem.endsWith(u8, filename, ".p12");
+
                 // Read local file header to get actual data offset
                 const local_offset: usize = local_header_offset;
                 if (local_offset + 30 <= zip_data.len) {
@@ -340,23 +332,31 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
                             const file = dir.createFile(filename, .{ .mode = 0o600 }) catch |err| {
                                 std.log.err("Failed to create {s}: {any}", .{ filename, err });
                                 cd_pos += 46 + filename_len + extra_len + comment_len;
-                                file_count += 1;
+                                entries_processed += 1;
                                 continue;
                             };
                             defer file.close();
                             file.writeAll(file_data) catch |err| {
                                 std.log.err("Failed to write {s}: {any}", .{ filename, err });
                                 cd_pos += 46 + filename_len + extra_len + comment_len;
-                                file_count += 1;
+                                entries_processed += 1;
                                 continue;
                             };
 
                             std.log.debug("Extracted wallet file: {s} ({d} bytes)", .{ filename, file_data.len });
+                            successful_extractions += 1;
                         } else if (compression == 8) {
-                            // Deflate - skip for now, Oracle wallets typically use store
+                            // Deflate compression - critical wallet files must be extractable
+                            if (is_critical) {
+                                std.log.err("Critical wallet file {s} uses deflate compression (not supported)", .{filename});
+                                return error.DeflateCompressionNotSupported;
+                            }
                             std.log.warn("Skipping deflated file {s} (compression not supported)", .{filename});
-                            _ = uncompressed_size;
                         } else {
+                            if (is_critical) {
+                                std.log.err("Critical wallet file {s} uses unsupported compression {d}", .{ filename, compression });
+                                return error.UnsupportedCompression;
+                            }
                             std.log.warn("Unsupported compression method {d} for {s}", .{ compression, filename });
                         }
                     }
@@ -366,10 +366,10 @@ fn extractZipWallet(wallet_dir: []const u8, zip_data: []const u8, allocator: std
 
         // Move to next central directory entry
         cd_pos += 46 + filename_len + extra_len + comment_len;
-        file_count += 1;
+        entries_processed += 1;
     }
 
-    if (file_count == 0) {
+    if (successful_extractions == 0) {
         std.log.err("No files extracted from ZIP archive", .{});
         return error.EmptyZipArchive;
     }
@@ -398,11 +398,10 @@ fn extractCustomFormatWallet(wallet_dir: []const u8, content: []const u8, alloca
             if (line.len == 0) continue;
 
             // Check if this is a binary wallet file that requires valid base64
+            // Using endsWith covers cwallet.sso, ewallet.p12, and any path variants
             const is_binary = std.mem.endsWith(u8, filename, ".sso") or
                 std.mem.endsWith(u8, filename, ".p12") or
-                std.mem.endsWith(u8, filename, ".p12.lck") or
-                std.mem.eql(u8, filename, "cwallet.sso") or
-                std.mem.eql(u8, filename, "ewallet.p12");
+                std.mem.endsWith(u8, filename, ".p12.lck");
 
             // Decode base64 content for this file
             const line_decoded_size = std.base64.standard.Decoder.calcSizeForSlice(line) catch {
@@ -447,15 +446,11 @@ fn writeWalletFile(
     const file_path = try std.fs.path.join(allocator, &.{ wallet_dir, filename });
     defer allocator.free(file_path);
 
-    const file = try std.fs.createFileAbsolute(file_path, .{});
+    // Create file with restrictive permissions (owner read/write only)
+    const file = try std.fs.createFileAbsolute(file_path, .{ .mode = 0o600 });
     defer file.close();
 
     try file.writeAll(content);
-
-    // Set restrictive permissions (owner read/write only)
-    file.chmod(0o600) catch |err| {
-        std.log.warn("Could not set wallet file permissions: {any}", .{err});
-    };
 
     std.log.debug("Extracted wallet file: {s} ({d} bytes)", .{ filename, content.len });
 }
