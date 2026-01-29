@@ -29,6 +29,7 @@ pub const Config = struct {
     worker_threads: usize,
     queue_name: []const u8,
     queue_event_type: []const u8,
+    queue_enabled: bool,
     log_batch_size: usize,
     heartbeat_interval_sec: u32,
     process_timeout_sec: u32,
@@ -109,6 +110,7 @@ pub const Config = struct {
             .worker_threads = parseUsize("SENTINEL_WORKER_THREADS", 4),
             .queue_name = std.posix.getenv("SENTINEL_QUEUE_NAME") orelse "SENTINEL_QUEUE",
             .queue_event_type = std.posix.getenv("SENTINEL_QUEUE_EVENT_TYPE") orelse "SENTINEL_EVENT_T",
+            .queue_enabled = parseBool("SENTINEL_QUEUE_ENABLED", true),
             .log_batch_size = parseUsize("SENTINEL_LOG_BATCH_SIZE", 1000),
             .heartbeat_interval_sec = parseU32("SENTINEL_HEARTBEAT_INTERVAL_SEC", 30),
             .process_timeout_sec = parseU32("SENTINEL_PROCESS_TIMEOUT_SEC", 3600),
@@ -175,6 +177,19 @@ fn parseUsize(name: []const u8, default: usize) usize {
 fn parsePoolGetMode(name: []const u8, default: u8) u8 {
     const val = std.posix.getenv(name) orelse return default;
     return std.fmt.parseInt(u8, val, 10) catch default;
+}
+
+fn parseBool(name: []const u8, default: bool) bool {
+    const val = std.posix.getenv(name) orelse return default;
+    // Check for falsy values - anything else is truthy
+    if (std.mem.eql(u8, val, "false") or
+        std.mem.eql(u8, val, "0") or
+        std.mem.eql(u8, val, "no") or
+        std.mem.eql(u8, val, "off"))
+    {
+        return false;
+    }
+    return true;
 }
 
 // =============================================================================

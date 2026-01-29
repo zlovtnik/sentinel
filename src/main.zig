@@ -168,11 +168,15 @@ fn initializeComponents(state: *AppState) !void {
     }, pool, null);
     state.api_server = api;
 
-    // Initialize queue listener
-    log.info("Initializing AQ listener...", .{});
-    const queue = try allocator.create(QueueListener);
-    queue.* = QueueListener.init(pool, cfg.env.queue_name, cfg.env.queue_event_type);
-    state.queue_listener = queue;
+    // Initialize queue listener (optional - can be disabled for environments with CPU compatibility issues)
+    if (cfg.env.queue_enabled) {
+        log.info("Initializing AQ listener...", .{});
+        const queue = try allocator.create(QueueListener);
+        queue.* = QueueListener.init(pool, cfg.env.queue_name, cfg.env.queue_event_type);
+        state.queue_listener = queue;
+    } else {
+        log.warn("AQ listener disabled by configuration (SENTINEL_QUEUE_ENABLED=false)", .{});
+    }
 }
 
 fn startServices(state: *AppState) !void {
