@@ -1,38 +1,34 @@
 # =============================================================================
 # Process Sentinel Dockerfile
 # Multi-stage build with Zig and Oracle Instant Client
+# Uses Oracle Linux for better Oracle client compatibility
 # =============================================================================
 
-# Stage 1: Builder
-FROM debian:bookworm-slim AS builder
+# Stage 1: Builder - Use Oracle Linux which Oracle tests their clients against
+FROM oraclelinux:8-slim AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN microdnf install -y \
     curl \
-    xz-utils \
+    tar \
+    xz \
     ca-certificates \
-    libaio1 \
-    && rm -rf /var/lib/apt/lists/*
+    libaio \
+    unzip \
+    && microdnf clean all
 
 # Install Zig 0.15.2 (stable release)
 RUN curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz \
     | tar -xJ -C /opt \
     && ln -s /opt/zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
 
-# Install Oracle Instant Client 21c (publicly available, good compatibility)
-# Note: If CPU instruction issues persist, the Oracle libs themselves have optimizations
-RUN mkdir -p /opt/oracle && \
-    curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/2115000/instantclient-basic-linux.x64-21.15.0.0.0dbru.zip \
-    -o /tmp/instantclient.zip && \
-    apt-get update && apt-get install -y unzip && \
-    unzip -q /tmp/instantclient.zip -d /opt/oracle && \
-    rm /tmp/instantclient.zip && \
-    mv /opt/oracle/instantclient_* /opt/oracle/instantclient && \
-    echo /opt/oracle/instantclient > /etc/ld.so.conf.d/oracle-instantclient.conf && \
-    ldconfig
+# Install Oracle Instant Client 21c from Oracle Linux repos (optimized for OL)
+RUN microdnf install -y oracle-instantclient-release-el8 && \
+    microdnf install -y oracle-instantclient-basic && \
+    microdnf clean all
 
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
-ENV ORACLE_HOME=/opt/oracle/instantclient
+ENV LD_LIBRARY_PATH=/usr/lib/oracle/21/client64/lib
+ENV ORACLE_HOME=/usr/lib/oracle/21/client64
 
 # Copy source code
 WORKDIR /app
@@ -45,28 +41,23 @@ RUN mkdir -p deps && \
     | tar -xz -C deps && \
     mv deps/odpi-5.4.0 deps/odpi
 
-# Build the application using environment variables (not -D flags)
-# build.zig reads ORACLE_HOME and ODPIC_PATH from environment
+# Build the application
 # Use baseline x86_64 CPU to avoid illegal instruction errors on cloud VMs
-RUN ORACLE_HOME=/opt/oracle/instantclient ODPIC_PATH=deps/odpi \
+RUN ORACLE_HOME=/usr/lib/oracle/21/client64 ODPIC_PATH=deps/odpi \
     zig build -Doptimize=ReleaseSafe -Dcpu=x86_64
 
 # =============================================================================
-# Stage 2: Runtime
-FROM debian:bookworm-slim AS runtime
+# Stage 2: Runtime - Use Oracle Linux for runtime too
+FROM oraclelinux:8-slim AS runtime
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libaio1 \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 1000 sentinel
+RUN microdnf install -y oracle-instantclient-release-el8 && \
+    microdnf install -y oracle-instantclient-basic libaio && \
+    microdnf clean all && \
+    useradd -r -u 1000 sentinel
 
-# Copy Oracle Instant Client from builder
-COPY --from=builder /opt/oracle/instantclient /opt/oracle/instantclient
-
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
-ENV ORACLE_HOME=/opt/oracle/instantclient
+ENV LD_LIBRARY_PATH=/usr/lib/oracle/21/client64/lib
+ENV ORACLE_HOME=/usr/lib/oracle/21/client64
 
 # Copy binary from builder
 COPY --from=builder /app/zig-out/bin/process-sentinel /usr/local/bin/process-sentinel
