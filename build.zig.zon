@@ -1,0 +1,17 @@
+.{
+    .name = "process-sentinel",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+
+    .dependencies = .{
+        // ODPI-C is included as a git submodule in deps/odpi
+        // Clone with: git clone https://github.com/oracle/odpi.git deps/odpi
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "sql",
+    },
+}

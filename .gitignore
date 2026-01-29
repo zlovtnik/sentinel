@@ -1,0 +1,38 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Oracle Wallet (sensitive)
+wallet/
+*.sso
+*.p12
+ewallet.p12
+cwallet.sso
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/
+
+# Test artifacts
+test-results/
+coverage/
