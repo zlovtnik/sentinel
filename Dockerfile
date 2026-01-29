@@ -33,11 +33,16 @@ RUN mkdir -p /opt/oracle && \
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient
 ENV ORACLE_HOME=/opt/oracle/instantclient
 
-# Copy source code and ODPI-C dependency
+# Copy source code
 WORKDIR /app
 COPY build.zig build.zig.zon ./
 COPY src ./src
-COPY deps ./deps
+
+# Clone ODPI-C (submodule not included in Docker COPY)
+RUN mkdir -p deps && \
+    curl -fsSL https://github.com/oracle/odpi/archive/refs/tags/v5.4.0.tar.gz \
+    | tar -xz -C deps && \
+    mv deps/odpi-5.4.0 deps/odpi
 
 # Build the application using environment variables (not -D flags)
 # build.zig reads ORACLE_HOME and ODPIC_PATH from environment
