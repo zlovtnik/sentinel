@@ -46,8 +46,9 @@ RUN mkdir -p deps && \
 
 # Build the application using environment variables (not -D flags)
 # build.zig reads ORACLE_HOME and ODPIC_PATH from environment
+# Use baseline x86_64 CPU to avoid illegal instruction errors on cloud VMs
 RUN ORACLE_HOME=/opt/oracle/instantclient ODPIC_PATH=deps/odpi \
-    zig build -Doptimize=ReleaseSafe
+    zig build -Doptimize=ReleaseSafe -Dcpu=x86_64
 
 # =============================================================================
 # Stage 2: Runtime
