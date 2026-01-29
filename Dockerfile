@@ -19,10 +19,10 @@ RUN curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.x
     | tar -xJ -C /opt \
     && ln -s /opt/zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
 
-# Install Oracle Instant Client (19c for maximum CPU compatibility)
-# Version 23c requires newer CPU instructions that may not be available on cloud VMs
+# Install Oracle Instant Client 21c (publicly available, good compatibility)
+# Note: If CPU instruction issues persist, the Oracle libs themselves have optimizations
 RUN mkdir -p /opt/oracle && \
-    curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/1923000/instantclient-basic-linux.x64-19.23.0.0.0dbru.zip \
+    curl -fsSL https://download.oracle.com/otn_software/linux/instantclient/2115000/instantclient-basic-linux.x64-21.15.0.0.0dbru.zip \
     -o /tmp/instantclient.zip && \
     apt-get update && apt-get install -y unzip && \
     unzip -q /tmp/instantclient.zip -d /opt/oracle && \
